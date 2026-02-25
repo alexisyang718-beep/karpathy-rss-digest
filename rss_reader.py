@@ -66,7 +66,7 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-chat"
 
 # GitHub Pages 配置（推送后自动生成）
-GITHUB_PAGES_URL = os.environ.get("GITHUB_PAGES_URL", "")
+GITHUB_PAGES_URL = os.environ.get("GITHUB_PAGES_URL", "https://alexisyang718-beep.github.io/karpathy-rss-digest")
 
 
 # ── 数据模型 ──────────────────────────────────────────────

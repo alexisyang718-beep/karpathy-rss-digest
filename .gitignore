@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+output/
+*.log
+.sent_articles.json
+.codebuddy/

@@ -887,7 +887,7 @@ def main():
     )
     parser.add_argument("--days", type=int, default=1, help="抓取最近N天的内容 (默认: 1)")
     parser.add_argument("--output", choices=["markdown", "html"], default="html", help="输出格式 (默认: html)")
-    parser.add_argument("--webhook", type=str, default=None, help="企业微信群 Webhook URL")
+    parser.add_argument("--webhook", type=str, default=None, help="企业微信群 Webhook URL (或设置 WECOM_WEBHOOK_URL 环境变量)")
     parser.add_argument("--watch", action="store_true", help="实时监控模式")
     parser.add_argument("--interval", type=int, default=DEFAULT_WATCH_INTERVAL, help=f"轮询间隔分钟数 (默认: {DEFAULT_WATCH_INTERVAL})")
     parser.add_argument("--schedule", action="store_true", help="定时任务模式（每天08:00）")
@@ -896,16 +896,19 @@ def main():
 
     # 默认启用内容筛选，除非指定 --no-filter
     enable_filter = ENABLE_CONTENT_FILTER and not args.no_filter
+    
+    # 支持 webhook 从环境变量读取
+    webhook_url = args.webhook or os.environ.get("WECOM_WEBHOOK_URL")
 
-    if args.watch and not args.webhook:
-        parser.error("--watch 模式需要配合 --webhook 使用")
+    if args.watch and not webhook_url:
+        parser.error("--watch 模式需要配合 --webhook 使用或设置 WECOM_WEBHOOK_URL 环境变量")
 
     if args.watch:
-        asyncio.run(run_watch(args.webhook, args.interval, args.days, enable_filter))
+        asyncio.run(run_watch(webhook_url, args.interval, args.days, enable_filter))
     elif args.schedule:
-        run_scheduled(args.days, args.output, args.webhook, enable_filter)
+        run_scheduled(args.days, args.output, webhook_url, enable_filter)
     else:
-        asyncio.run(run_digest(args.days, args.output, webhook_url=args.webhook, enable_filter=enable_filter))
+        asyncio.run(run_digest(args.days, args.output, webhook_url=webhook_url, enable_filter=enable_filter))
 
 
 if __name__ == "__main__":

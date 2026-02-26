@@ -60,6 +60,9 @@ DOCS_DIR = BASE_DIR / "docs"          # GitHub Pages 目录
 FEEDS_FILE = BASE_DIR / "feeds.opml"
 SENT_DB_FILE = OUTPUT_DIR / ".sent_articles.json"
 
+# 内容筛选配置（默认只保留科技/AI/商业相关内容）
+ENABLE_CONTENT_FILTER = os.environ.get("ENABLE_CONTENT_FILTER", "true").lower() != "false"
+
 # DeepSeek API 配置
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "sk-6ed98ef61a9049a0819fd27f6a04b126")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
@@ -90,6 +93,8 @@ class Article:
     ai_title: str = ""
     ai_summary: str = ""        # 一句话摘要（企微推送用）
     ai_detail: str = ""         # 详细中文解读（网页展示用）
+    category: str = ""          # AI判断的类别：科技/AI/商业/其他
+    is_relevant: bool = True    # 是否属于科技/AI/商业相关内容
 
 
 # ── 已推送文章去重 ────────────────────────────────────────
@@ -301,22 +306,30 @@ def create_llm_client() -> OpenAI:
 
 
 SUMMARIZE_PROMPT = """\
-你是一位资深科技行业从业者和技术编辑。请根据以下文章内容，生成三部分内容：
+你是一位资深科技行业从业者和技术编辑。请根据以下文章内容，完成以下任务：
 
+## 第一步：判断文章类别
+判断文章是否属于以下类别之一：
+- **AI**: 人工智能、机器学习、深度学习、LLM、GPT、神经网络等
+- **科技**: 软件开发、编程语言、系统架构、云计算、开源项目、硬件、半导体、网络安全等
+- **商业**: 科技公司动态、创业、投资、商业模式、产品发布、行业趋势等
+
+如果文章不属于以上任何类别（如美食、娱乐、体育、政治、生活琐事等），标记为"其他"并跳过摘要生成。
+
+## 第二步：生成内容（仅限AI/科技/商业类文章）
 1. **title**（中文标题）：简洁有力，让从业者一眼能理解文章核心主题（不超过30字）
-
 2. **summary**（一句话摘要）：用一句话概括文章最核心的价值点（不超过80字），用于消息推送
-
 3. **detail**（详细中文解读）：5-8句话的完整中文解读，要求：
    - 用从业者能理解的专业但不晦涩的语言
    - 第一段说清楚"这篇文章讲了什么"
    - 第二段提炼核心观点、关键数据或结论
    - 第三段说明对从业者的启发或实用价值
    - 专有名词保留英文（如 GPT、Transformer、Rust 等）
-   - 让读者不用点开原文就能了解文章核心内容
 
 请严格按以下 JSON 格式返回，不要添加任何其他内容：
-{"title": "中文标题", "summary": "一句话摘要", "detail": "详细中文解读"}
+{"category": "AI/科技/商业/其他", "is_relevant": true/false, "title": "中文标题", "summary": "一句话摘要", "detail": "详细中文解读"}
+
+注意：如果category为"其他"，is_relevant必须为false，title/summary/detail可以为空。
 """
 
 
@@ -325,7 +338,7 @@ def summarize_with_llm(client: OpenAI, articles: list[Article]) -> list[dict]:
     for article in articles:
         content = article.full_content or article.summary or ""
         if not content:
-            results.append({"title": article.title, "summary": "", "detail": ""})
+            results.append({"title": article.title, "summary": "", "detail": "", "category": "其他", "is_relevant": False})
             continue
         content_trimmed = content[:MAX_CONTENT_LEN]
         user_msg = f"原标题: {article.title}\n来源: {article.source}\n\n文章内容:\n{content_trimmed}"
@@ -344,23 +357,32 @@ def summarize_with_llm(client: OpenAI, articles: list[Article]) -> list[dict]:
             json_match = re.search(r'\{.*\}', resp_text, re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group())
+                is_relevant = data.get("is_relevant", True)
+                category = data.get("category", "其他")
+                # 确保category为其他时is_relevant为false
+                if category == "其他":
+                    is_relevant = False
                 results.append({
-                    "title": data.get("title", article.title),
-                    "summary": data.get("summary", ""),
-                    "detail": data.get("detail", data.get("summary", "")),
+                    "title": data.get("title", article.title) if is_relevant else article.title,
+                    "summary": data.get("summary", "") if is_relevant else "",
+                    "detail": data.get("detail", data.get("summary", "")) if is_relevant else "",
+                    "category": category,
+                    "is_relevant": is_relevant,
                 })
             else:
-                results.append({"title": article.title, "summary": resp_text, "detail": resp_text})
+                results.append({"title": article.title, "summary": resp_text, "detail": resp_text, "category": "其他", "is_relevant": False})
         except Exception as e:
             logger.warning(f"LLM 摘要失败 [{article.title[:30]}]: {e}")
-            results.append({"title": article.title, "summary": article.summary, "detail": article.summary})
+            results.append({"title": article.title, "summary": article.summary, "detail": article.summary, "category": "其他", "is_relevant": False})
     return results
 
 
-def ai_summarize_articles(articles: list[Article]) -> list[Article]:
+def ai_summarize_articles(articles: list[Article], enable_filter: bool = True) -> list[Article]:
     if not articles:
         return articles
     logger.info(f"🧠 开始用 AI 生成 {len(articles)} 篇文章的中文解读...")
+    if enable_filter:
+        logger.info("   📌 内容筛选已启用：只保留科技/AI/商业相关内容")
     client = create_llm_client()
     total = len(articles)
     for i in range(0, total, LLM_BATCH_SIZE):
@@ -374,8 +396,21 @@ def ai_summarize_articles(articles: list[Article]) -> list[Article]:
             articles[idx].ai_title = result["title"]
             articles[idx].ai_summary = result["summary"]
             articles[idx].ai_detail = result["detail"]
-    logger.info("✅ AI 解读生成完成")
-    return articles
+            articles[idx].category = result["category"]
+            articles[idx].is_relevant = result["is_relevant"]
+    
+    if enable_filter:
+        # 统计过滤结果
+        relevant_articles = [a for a in articles if a.is_relevant]
+        filtered_out = len(articles) - len(relevant_articles)
+        if filtered_out > 0:
+            logger.info(f"✅ AI 解读生成完成: 保留 {len(relevant_articles)} 篇相关文章, 过滤掉 {filtered_out} 篇非科技/AI/商业内容")
+        else:
+            logger.info(f"✅ AI 解读生成完成: 全部 {len(relevant_articles)} 篇文章均为相关内容")
+        return relevant_articles
+    else:
+        logger.info(f"✅ AI 解读生成完成: {len(articles)} 篇文章")
+        return articles
 
 
 # ── 企业微信推送 ──────────────────────────────────────────
@@ -446,31 +481,27 @@ async def send_to_wecom(webhook_url: str, articles: list[Article], page_url: str
 
 # ── 分类 ──────────────────────────────────────────────────
 def categorize_articles(articles: list[Article]) -> dict[str, list[Article]]:
-    AI_KEYWORDS = {"ai", "ml", "machine", "learning", "gpt", "llm", "neural", "deep"}
-    SECURITY_SOURCES = {"krebsonsecurity.com", "troyhunt.com", "lcamtuf.substack.com"}
-    STARTUP_SOURCES = {"paulgraham.com", "steveblank.com", "dwarkesh.com", "garymarcus.substack.com"}
+    """使用AI判断的category进行分类"""
+    # 定义类别到展示名称的映射
+    category_mapping = {
+        "AI": "🤖 AI / 机器学习",
+        "科技": "💻 科技 / 技术",
+        "商业": "📈 商业 / 行业",
+    }
+    
     categories = {
         "🤖 AI / 机器学习": [],
-        "🔒 安全": [],
-        "🚀 创业 / 思考": [],
-        "💻 编程 / 技术": [],
-        "📰 综合": [],
+        "💻 科技 / 技术": [],
+        "📈 商业 / 行业": [],
     }
+    
     for a in articles:
-        source_lower = a.source.lower()
-        title_lower = a.title.lower()
-        tags_lower = {t.lower() for t in a.tags}
-        combined = title_lower + " " + " ".join(tags_lower)
-        if any(kw in combined for kw in AI_KEYWORDS) or "substack" in source_lower and "marcus" in source_lower:
-            categories["🤖 AI / 机器学习"].append(a)
-        elif any(s in source_lower for s in SECURITY_SOURCES):
-            categories["🔒 安全"].append(a)
-        elif any(s in source_lower for s in STARTUP_SOURCES):
-            categories["🚀 创业 / 思考"].append(a)
-        elif any(kw in combined for kw in {"rust", "python", "javascript", "go ", "code", "programming", "compiler", "linux", "kernel", "api", "bug", "debug"}):
-            categories["💻 编程 / 技术"].append(a)
-        else:
-            categories["📰 综合"].append(a)
+        cat = a.category or "其他"
+        display_name = category_mapping.get(cat)
+        if display_name and display_name in categories:
+            categories[display_name].append(a)
+    
+    # 移除空分类
     return {k: v for k, v in categories.items() if v}
 
 
@@ -494,7 +525,8 @@ HTML_TEMPLATE = Template("""\
   .article { background: #111; border-radius: 12px; padding: 22px 24px; margin-bottom: 16px; border: 1px solid #1e1e1e; transition: border-color 0.2s, transform 0.1s; }
   .article:hover { border-color: #333; transform: translateY(-1px); }
   .article h3 { font-size: 1.08em; margin-bottom: 8px; color: #fff; line-height: 1.5; }
-  .article-meta { font-size: 0.8em; color: #666; margin-bottom: 12px; display: flex; gap: 16px; flex-wrap: wrap; }
+  .article-meta { font-size: 0.8em; color: #666; margin-bottom: 12px; display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+  .article-meta .category-tag { background: #1a3a2a; color: #4ade80; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; }
   .detail { font-size: 0.93em; color: #bbb; line-height: 1.9; margin-bottom: 14px; white-space: pre-line; }
   .read-original { display: inline-block; font-size: 0.85em; color: #4fc3f7; text-decoration: none; padding: 6px 16px; border: 1px solid #2a3a4a; border-radius: 6px; transition: all 0.2s; }
   .read-original:hover { background: #1a2a3a; border-color: #4fc3f7; }
@@ -542,6 +574,7 @@ HTML_TEMPLATE = Template("""\
   <div class="article-meta">
     <span>📝 {{ a.source }}{% if a.author %} · {{ a.author }}{% endif %}</span>
     <span>🕐 {{ a.published.strftime('%Y-%m-%d %H:%M') if a.published else '近期' }}</span>
+    {% if a.category and a.category != '其他' %}<span class="category-tag">{{ a.category }}</span>{% endif %}
   </div>
   {% if a.tags %}<div class="tags">{% for t in a.tags %}<span class="tag">{{ t }}</span>{% endfor %}</div>{% endif %}
   {% if a.ai_detail %}<div class="detail">{{ a.ai_detail }}</div>
@@ -714,7 +747,8 @@ def save_markdown(content: str) -> Path:
 # ── 核心流程 ──────────────────────────────────────────────
 async def fetch_and_process(days: int, since: datetime = None,
                             webhook_url: str = None,
-                            sent_db: dict = None) -> list[Article]:
+                            sent_db: dict = None,
+                            enable_filter: bool = True) -> list[Article]:
     if since is None:
         since = datetime.now(timezone.utc) - timedelta(days=days)
 
@@ -735,7 +769,11 @@ async def fetch_and_process(days: int, since: datetime = None,
             return []
 
     await enrich_articles_with_full_content(articles)
-    articles = ai_summarize_articles(articles)
+    articles = ai_summarize_articles(articles, enable_filter)
+    
+    if not articles:
+        logger.info("筛选后无相关文章")
+        return []
 
     # 生成网页（始终生成，供 GitHub Pages 使用）
     html_content = generate_html_page(articles)
@@ -756,12 +794,13 @@ async def fetch_and_process(days: int, since: datetime = None,
 
 # ── 主逻辑 ────────────────────────────────────────────────
 async def run_digest(days: int = 1, fmt: str = "markdown",
-                     print_output: bool = True, webhook_url: str = None):
+                     print_output: bool = True, webhook_url: str = None,
+                     enable_filter: bool = True):
     since = datetime.now(timezone.utc) - timedelta(days=days)
     logger.info(f"🚀 开始抓取，时间范围: 最近 {days} 天 (自 {since.strftime('%Y-%m-%d %H:%M UTC')})")
 
     sent_db = load_sent_db() if webhook_url else None
-    articles = await fetch_and_process(days, since, webhook_url, sent_db)
+    articles = await fetch_and_process(days, since, webhook_url, sent_db, enable_filter)
 
     if not articles:
         return
@@ -781,11 +820,12 @@ async def run_digest(days: int = 1, fmt: str = "markdown",
 
 
 async def run_watch(webhook_url: str, interval: int = DEFAULT_WATCH_INTERVAL,
-                    days: int = 1):
+                    days: int = 1, enable_filter: bool = True):
     logger.info(f"👁️  实时监控模式启动")
     logger.info(f"   Webhook: {webhook_url[:50]}...")
     logger.info(f"   轮询间隔: 每 {interval} 分钟")
     logger.info(f"   监控范围: 最近 {days} 天的新文章")
+    logger.info(f"   内容筛选: {'已启用' if enable_filter else '已禁用'}")
     logger.info(f"   按 Ctrl+C 停止\n")
 
     try:
@@ -806,7 +846,7 @@ async def run_watch(webhook_url: str, interval: int = DEFAULT_WATCH_INTERVAL,
         try:
             since = datetime.now(timezone.utc) - timedelta(days=days)
             sent_db = load_sent_db()
-            articles = await fetch_and_process(days, since, webhook_url, sent_db)
+            articles = await fetch_and_process(days, since, webhook_url, sent_db, enable_filter)
             if articles:
                 logger.info(f"✅ 本轮推送了 {len(articles)} 篇新文章")
             else:
@@ -817,13 +857,13 @@ async def run_watch(webhook_url: str, interval: int = DEFAULT_WATCH_INTERVAL,
         await asyncio.sleep(interval * 60)
 
 
-def run_scheduled(days: int, fmt: str, webhook_url: str = None):
+def run_scheduled(days: int, fmt: str, webhook_url: str = None, enable_filter: bool = True):
     import schedule
     import time
     logger.info("⏰ 定时任务已启动，每天 08:00 执行")
-    asyncio.run(run_digest(days, fmt, webhook_url=webhook_url))
+    asyncio.run(run_digest(days, fmt, webhook_url=webhook_url, enable_filter=enable_filter))
     schedule.every().day.at("08:00").do(
-        lambda: asyncio.run(run_digest(days, fmt, webhook_url=webhook_url))
+        lambda: asyncio.run(run_digest(days, fmt, webhook_url=webhook_url, enable_filter=enable_filter))
     )
     while True:
         schedule.run_pending()
@@ -836,8 +876,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 示例:
-  python rss_reader.py                                        # 抓取今天的内容
+  python rss_reader.py                                        # 抓取今天的内容（默认只保留科技/AI/商业类）
   python rss_reader.py --days 3                               # 抓取最近3天
+  python rss_reader.py --no-filter                            # 禁用内容筛选，收录所有文章
   python rss_reader.py --webhook <URL>                        # 抓取并推送到企业微信群
   python rss_reader.py --watch --webhook <URL>                # 实时监控，新文章自动推送
   python rss_reader.py --watch --webhook <URL> --interval 15  # 每15分钟检查一次
@@ -850,17 +891,21 @@ def main():
     parser.add_argument("--watch", action="store_true", help="实时监控模式")
     parser.add_argument("--interval", type=int, default=DEFAULT_WATCH_INTERVAL, help=f"轮询间隔分钟数 (默认: {DEFAULT_WATCH_INTERVAL})")
     parser.add_argument("--schedule", action="store_true", help="定时任务模式（每天08:00）")
+    parser.add_argument("--no-filter", action="store_true", help="禁用内容筛选（收录所有类别文章）")
     args = parser.parse_args()
+
+    # 默认启用内容筛选，除非指定 --no-filter
+    enable_filter = ENABLE_CONTENT_FILTER and not args.no_filter
 
     if args.watch and not args.webhook:
         parser.error("--watch 模式需要配合 --webhook 使用")
 
     if args.watch:
-        asyncio.run(run_watch(args.webhook, args.interval, args.days))
+        asyncio.run(run_watch(args.webhook, args.interval, args.days, enable_filter))
     elif args.schedule:
-        run_scheduled(args.days, args.output, args.webhook)
+        run_scheduled(args.days, args.output, args.webhook, enable_filter)
     else:
-        asyncio.run(run_digest(args.days, args.output, webhook_url=args.webhook))
+        asyncio.run(run_digest(args.days, args.output, webhook_url=args.webhook, enable_filter=enable_filter))
 
 
 if __name__ == "__main__":

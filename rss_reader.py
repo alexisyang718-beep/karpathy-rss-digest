@@ -64,7 +64,7 @@ SENT_DB_FILE = OUTPUT_DIR / ".sent_articles.json"
 ENABLE_CONTENT_FILTER = os.environ.get("ENABLE_CONTENT_FILTER", "true").lower() != "false"
 
 # DeepSeek API 配置
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "sk-6ed98ef61a9049a0819fd27f6a04b126")
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-chat"
 

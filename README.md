@@ -137,7 +137,10 @@ AI 会自动判断每篇文章的类别：
 
 ## 🙏 致谢
 
-- [Andrej Karpathy](https://twitter.com/karpathy) - 推荐的博客列表
+- [Andrej Karpathy](https://twitter.com/karpathy) - 推荐的博客列表：https://gist.github.com/emschwartz/e6d2bf860ccc367fe37ff953ba6de66b
+这份清单并非随机挑选，而是 2025 年 Hacker News 上最受欢迎的年度博客合集。Karpathy 的逻辑很直接：比起算法推荐的碎片，这些长文博客能提供更高密度的思考。
+<img width="1080" height="1060" alt="image" src="https://github.com/user-attachments/assets/4e8cfae4-3edf-4bca-a996-5d285e71858f" />
+
 - [DeepSeek](https://deepseek.com) - AI 摘要生成
 
 ## 📄 License

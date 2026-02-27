@@ -50,7 +50,7 @@ MAX_FETCH_PAGE = 10
 REQUEST_TIMEOUT = 15.0
 PAGE_TIMEOUT = 20.0
 MAX_ARTICLES_NO_DATE = 3
-MAX_CONTENT_LEN = 4000
+MAX_CONTENT_LEN = 2000
 LLM_BATCH_SIZE = 5
 DEFAULT_WATCH_INTERVAL = 30
 WECOM_MSG_MAX_LEN = 4096
@@ -306,30 +306,17 @@ def create_llm_client() -> OpenAI:
 
 
 SUMMARIZE_PROMPT = """\
-你是一位资深科技行业从业者和技术编辑。请根据以下文章内容，完成以下任务：
+你是科技编辑。判断文章类别并生成中文标题和摘要。
 
-## 第一步：判断文章类别
-判断文章是否属于以下类别之一：
-- **AI**: 人工智能、机器学习、深度学习、LLM、GPT、神经网络等
-- **科技**: 软件开发、编程语言、系统架构、云计算、开源项目、硬件、半导体、网络安全等
-- **商业**: 科技公司动态、创业、投资、商业模式、产品发布、行业趋势等
+类别：AI（人工智能/ML/LLM）、科技（开发/云计算/硬件/安全）、商业（科技公司/创业/投资）、其他。
+非科技类直接返回 is_relevant=false，title/summary 留空。
 
-如果文章不属于以上任何类别（如美食、娱乐、体育、政治、生活琐事等），标记为"其他"并跳过摘要生成。
+JSON 格式（不要添加其他内容）：
+{"category": "AI/科技/商业/其他", "is_relevant": true/false, "title": "中文标题(≤30字)", "summary": "一句话摘要(≤80字)"}
+"""
 
-## 第二步：生成内容（仅限AI/科技/商业类文章）
-1. **title**（中文标题）：简洁有力，让从业者一眼能理解文章核心主题（不超过30字）
-2. **summary**（一句话摘要）：用一句话概括文章最核心的价值点（不超过80字），用于消息推送
-3. **detail**（详细中文解读）：5-8句话的完整中文解读，要求：
-   - 用从业者能理解的专业但不晦涩的语言
-   - 第一段说清楚"这篇文章讲了什么"
-   - 第二段提炼核心观点、关键数据或结论
-   - 第三段说明对从业者的启发或实用价值
-   - 专有名词保留英文（如 GPT、Transformer、Rust 等）
-
-请严格按以下 JSON 格式返回，不要添加任何其他内容：
-{"category": "AI/科技/商业/其他", "is_relevant": true/false, "title": "中文标题", "summary": "一句话摘要", "detail": "详细中文解读"}
-
-注意：如果category为"其他"，is_relevant必须为false，title/summary/detail可以为空。
+DETAIL_PROMPT = """\
+你是资深科技编辑。用5-8句话写完整中文解读：第一段讲文章内容，第二段提炼核心观点/数据，第三段说对从业者的启发。专有名词保留英文（GPT、Transformer、Rust等）。只输出解读文本，不加其他内容。
 """
 
 
@@ -338,10 +325,10 @@ def summarize_with_llm(client: OpenAI, articles: list[Article]) -> list[dict]:
     for article in articles:
         content = article.full_content or article.summary or ""
         if not content:
-            results.append({"title": article.title, "summary": "", "detail": "", "category": "其他", "is_relevant": False})
+            results.append({"title": article.title, "summary": "", "category": "其他", "is_relevant": False})
             continue
         content_trimmed = content[:MAX_CONTENT_LEN]
-        user_msg = f"原标题: {article.title}\n来源: {article.source}\n\n文章内容:\n{content_trimmed}"
+        user_msg = f"原标题: {article.title}\n来源: {article.source}\n\n{content_trimmed}"
         try:
             response = client.chat.completions.create(
                 model=DEEPSEEK_MODEL,
@@ -350,31 +337,53 @@ def summarize_with_llm(client: OpenAI, articles: list[Article]) -> list[dict]:
                     {"role": "user", "content": user_msg},
                 ],
                 temperature=0.3,
-                max_tokens=600,
+                max_tokens=200,
             )
             resp_text = response.choices[0].message.content.strip()
-            # 提取 JSON（支持多行）
             json_match = re.search(r'\{.*\}', resp_text, re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group())
                 is_relevant = data.get("is_relevant", True)
                 category = data.get("category", "其他")
-                # 确保category为其他时is_relevant为false
                 if category == "其他":
                     is_relevant = False
                 results.append({
                     "title": data.get("title", article.title) if is_relevant else article.title,
                     "summary": data.get("summary", "") if is_relevant else "",
-                    "detail": data.get("detail", data.get("summary", "")) if is_relevant else "",
                     "category": category,
                     "is_relevant": is_relevant,
                 })
             else:
-                results.append({"title": article.title, "summary": resp_text, "detail": resp_text, "category": "其他", "is_relevant": False})
+                results.append({"title": article.title, "summary": "", "category": "其他", "is_relevant": False})
         except Exception as e:
             logger.warning(f"LLM 摘要失败 [{article.title[:30]}]: {e}")
-            results.append({"title": article.title, "summary": article.summary, "detail": article.summary, "category": "其他", "is_relevant": False})
+            results.append({"title": article.title, "summary": article.summary, "category": "其他", "is_relevant": False})
     return results
+
+
+def enrich_detail_with_llm(client: OpenAI, articles: list[Article]) -> None:
+    """对已过滤的相关文章补充详细中文解读（网页展示用）"""
+    for article in articles:
+        content = article.full_content or article.summary or ""
+        if not content:
+            article.ai_detail = article.ai_summary
+            continue
+        content_trimmed = content[:MAX_CONTENT_LEN]
+        user_msg = f"标题: {article.ai_title or article.title}\n来源: {article.source}\n\n{content_trimmed}"
+        try:
+            response = client.chat.completions.create(
+                model=DEEPSEEK_MODEL,
+                messages=[
+                    {"role": "system", "content": DETAIL_PROMPT},
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=0.5,
+                max_tokens=400,
+            )
+            article.ai_detail = response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.warning(f"LLM 详细解读失败 [{article.title[:30]}]: {e}")
+            article.ai_detail = article.ai_summary
 
 
 def ai_summarize_articles(articles: list[Article], enable_filter: bool = True) -> list[Article]:
@@ -395,22 +404,27 @@ def ai_summarize_articles(articles: list[Article], enable_filter: bool = True) -
             idx = i + j
             articles[idx].ai_title = result["title"]
             articles[idx].ai_summary = result["summary"]
-            articles[idx].ai_detail = result["detail"]
             articles[idx].category = result["category"]
             articles[idx].is_relevant = result["is_relevant"]
-    
+
     if enable_filter:
-        # 统计过滤结果
         relevant_articles = [a for a in articles if a.is_relevant]
         filtered_out = len(articles) - len(relevant_articles)
         if filtered_out > 0:
-            logger.info(f"✅ AI 解读生成完成: 保留 {len(relevant_articles)} 篇相关文章, 过滤掉 {filtered_out} 篇非科技/AI/商业内容")
+            logger.info(f"✅ 分类完成: 保留 {len(relevant_articles)} 篇相关文章, 过滤掉 {filtered_out} 篇非科技/AI/商业内容")
         else:
-            logger.info(f"✅ AI 解读生成完成: 全部 {len(relevant_articles)} 篇文章均为相关内容")
-        return relevant_articles
+            logger.info(f"✅ 分类完成: 全部 {len(relevant_articles)} 篇文章均为相关内容")
     else:
-        logger.info(f"✅ AI 解读生成完成: {len(articles)} 篇文章")
-        return articles
+        relevant_articles = articles
+        logger.info(f"✅ 分类完成: {len(articles)} 篇文章")
+
+    # 仅对相关文章生成详细解读（网页展示用）
+    if relevant_articles:
+        logger.info(f"🧠 生成 {len(relevant_articles)} 篇相关文章的详细中文解读...")
+        enrich_detail_with_llm(client, relevant_articles)
+        logger.info(f"✅ 详细解读生成完成")
+
+    return relevant_articles
 
 
 # ── 企业微信推送 ──────────────────────────────────────────
@@ -419,18 +433,27 @@ def _utf8_len(text: str) -> int:
     return len(text.encode("utf-8"))
 
 
-def _build_wecom_markdown(articles: list[Article], page_url: str = "") -> list[str]:
-    """构建企业微信 Markdown 消息：精简摘要 + 网页链接"""
-    MAX_BYTES = 3800  # 留出余量，企业微信限制 4096 字节
-    messages = []
+def _select_top_articles(articles: list[Article], n: int = 5) -> list[Article]:
+    """从所有文章中挑选最重要的 n 篇：AI 类优先，其次科技，其次商业，同类按发布时间降序"""
+    priority = {"AI": 0, "科技": 1, "商业": 2}
+    sorted_articles = sorted(
+        articles,
+        key=lambda a: (
+            priority.get(a.category, 3),
+            -(a.published.timestamp() if a.published else 0),
+        ),
+    )
+    return sorted_articles[:n]
 
-    header = f"📡 **Karpathy RSS 实时精选**\n> {datetime.now().strftime('%Y-%m-%d %H:%M')}  |  {len(articles)} 篇新文章\n"
-    if page_url:
-        header += f"> [👉 查看完整中文解读]({page_url})\n"
-    header += "\n"
 
-    current_msg = header
+def _build_wecom_markdown(articles: list[Article], page_url: str = "", total_count: int = 0) -> str:
+    """构建企业微信 Markdown 消息：精简摘要 + 底部完整解读链接"""
+    header = f"📡 **Karpathy RSS 精选**\n> {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    if total_count > len(articles):
+        header += f"  |  本期 {total_count} 篇，精选 {len(articles)} 篇"
+    header += "\n\n"
 
+    body = ""
     for i, a in enumerate(articles):
         title = a.ai_title or a.title
         summary = a.ai_summary or ""
@@ -443,40 +466,35 @@ def _build_wecom_markdown(articles: list[Article], page_url: str = "") -> list[s
                 summary = summary[:80] + "..."
             block += f"> {summary}\n"
         block += "\n"
+        body += block
 
-        if _utf8_len(current_msg) + _utf8_len(block) > MAX_BYTES:
-            messages.append(current_msg)
-            current_msg = f"📡 **Karpathy RSS 实时精选（续）**\n\n"
+    footer = ""
+    if page_url:
+        footer = f"> [👉 查看全部 {total_count} 篇完整中文解读]({page_url})" if total_count > len(articles) else f"> [👉 查看完整中文解读]({page_url})"
 
-        current_msg += block
-
-    if current_msg.strip():
-        messages.append(current_msg)
-
-    return messages
+    return header + body + footer
 
 
 async def send_to_wecom(webhook_url: str, articles: list[Article], page_url: str = ""):
     if not articles:
         logger.info("没有新文章需要推送")
         return
-    messages = _build_wecom_markdown(articles, page_url)
-    logger.info(f"📤 向企业微信推送 {len(articles)} 篇文章（{len(messages)} 条消息）")
+    total_count = len(articles)
+    top_articles = _select_top_articles(articles, n=5)
+    msg = _build_wecom_markdown(top_articles, page_url, total_count=total_count)
+    logger.info(f"📤 向企业微信推送精选 {len(top_articles)}/{total_count} 篇文章")
     async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
-        for i, msg in enumerate(messages):
-            payload = {"msgtype": "markdown", "markdown": {"content": msg}}
-            try:
-                resp = await client.post(webhook_url, json=payload)
-                resp.raise_for_status()
-                result = resp.json()
-                if result.get("errcode") == 0:
-                    logger.info(f"  ✅ 消息 {i + 1}/{len(messages)} 发送成功")
-                else:
-                    logger.warning(f"  ❌ 消息 {i + 1} 发送失败: {result}")
-            except Exception as e:
-                logger.error(f"  ❌ 消息 {i + 1} 发送异常: {e}")
-            if i < len(messages) - 1:
-                await asyncio.sleep(1)
+        payload = {"msgtype": "markdown", "markdown": {"content": msg}}
+        try:
+            resp = await client.post(webhook_url, json=payload)
+            resp.raise_for_status()
+            result = resp.json()
+            if result.get("errcode") == 0:
+                logger.info(f"  ✅ 消息发送成功")
+            else:
+                logger.warning(f"  ❌ 消息发送失败: {result}")
+        except Exception as e:
+            logger.error(f"  ❌ 消息发送异常: {e}")
 
 
 # ── 分类 ──────────────────────────────────────────────────

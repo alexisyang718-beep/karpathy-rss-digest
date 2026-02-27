@@ -68,8 +68,13 @@ DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-chat"
 
-# GitHub Pages 配置（推送后自动生成）
-GITHUB_PAGES_URL = os.environ.get("GITHUB_PAGES_URL", "https://你的用户名.github.io/karpathy-rss-digest")
+# GitHub Pages 配置（自动从 GITHUB_REPOSITORY 推断，也可通过环境变量覆盖）
+_default_pages_url = ""
+_gh_repo = os.environ.get("GITHUB_REPOSITORY", "")  # GitHub Actions 内置，格式: owner/repo
+if _gh_repo:
+    _owner, _repo = _gh_repo.split("/", 1)
+    _default_pages_url = f"https://{_owner}.github.io/{_repo}"
+GITHUB_PAGES_URL = os.environ.get("GITHUB_PAGES_URL", _default_pages_url)
 
 
 # ── 数据模型 ──────────────────────────────────────────────

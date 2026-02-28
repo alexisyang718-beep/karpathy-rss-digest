@@ -6,7 +6,7 @@
 
 - **智能筛选**：自动过滤非科技/AI/商业类内容，只收录高质量文章
 - **AI 解读**：使用 DeepSeek 生成中文标题、摘要和详细解读
-- **自动更新**：GitHub Actions 每小时自动抓取新文章
+- **自动更新**：GitHub Actions 每天北京时间 22:00 自动抓取当日文章
 - **企业微信推送**：每期自动挑选 3-5 篇最重要的 AI/科技文章推送，附完整解读链接
 - **GitHub Pages**：生成精美网页，公开访问
 
@@ -47,26 +47,9 @@ python rss_reader.py --webhook "https://qyapi.weixin.qq.com/cgi-bin/webhook/send
 python rss_reader.py --days 3
 ```
 
-### 实时监控模式
-
-```bash
-# 每30分钟检查一次新文章并推送
-python rss_reader.py --watch --webhook "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
-
-# 每15分钟检查一次
-python rss_reader.py --watch --webhook <URL> --interval 15
-```
-
-### 定时任务模式
-
-```bash
-# 每天早上 8:00 自动运行
-python rss_reader.py --schedule --webhook <URL>
-```
-
 ## ⚙️ GitHub Actions 自动化
 
-项目已配置 GitHub Actions，每小时自动运行：
+项目已配置 GitHub Actions，每天北京时间 22:00 自动运行：
 
 1. Fork 本仓库
 2. 在仓库设置中添加 Secrets：
@@ -81,9 +64,6 @@ python rss_reader.py --schedule --webhook <URL>
 | `--days` | 抓取最近 N 天的内容 | 1 |
 | `--output` | 输出格式 (markdown/html) | html |
 | `--webhook` | 企业微信 Webhook URL | - |
-| `--watch` | 实时监控模式 | - |
-| `--interval` | 监控间隔（分钟） | 30 |
-| `--schedule` | 定时任务模式（每天 8:00） | - |
 | `--no-filter` | 禁用内容筛选 | - |
 
 ## 🔧 环境变量
@@ -103,12 +83,9 @@ karpathy-rss-digest/
 ├── .github/
 │   └── workflows/
 │       └── rss-digest.yml  # GitHub Actions 配置
-├── docs/                # GitHub Pages 输出
-│   ├── index.html       # 目录页
-│   └── 2026-02-26.html  # 每日精选
-└── output/              # 本地输出
-    ├── digest-*.md      # Markdown 格式
-    └── .sent_articles.json  # 已推送记录
+└── docs/                # GitHub Pages 输出
+    ├── index.html       # 目录页
+    └── 2026-02-28.html  # 每日精选
 ```
 
 ## 🎯 内容筛选

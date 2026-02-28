@@ -9,9 +9,6 @@ Karpathy RSS Daily Digest
     python rss_reader.py                          # 抓取并生成今日精选
     python rss_reader.py --days 3                 # 抓取最近3天的内容
     python rss_reader.py --webhook <URL>          # 抓取并推送到企业微信群
-    python rss_reader.py --watch --webhook <URL>  # 实时监控模式，发现新文章自动推送
-    python rss_reader.py --watch --interval 15    # 每15分钟检查一次（默认30分钟）
-    python rss_reader.py --schedule               # 每天早上8点生成日报
 """
 
 import asyncio
@@ -52,7 +49,6 @@ PAGE_TIMEOUT = 20.0
 MAX_ARTICLES_NO_DATE = 3
 MAX_CONTENT_LEN = 2000
 LLM_BATCH_SIZE = 5
-DEFAULT_WATCH_INTERVAL = 30
 WECOM_MSG_MAX_LEN = 4096
 BASE_DIR = Path(__file__).parent
 OUTPUT_DIR = BASE_DIR / "output"
@@ -842,96 +838,28 @@ async def run_digest(days: int = 1, fmt: str = "markdown",
         print("=" * 60 + "\n")
 
 
-async def run_watch(webhook_url: str, interval: int = DEFAULT_WATCH_INTERVAL,
-                    days: int = 1, enable_filter: bool = True):
-    logger.info(f"👁️  实时监控模式启动")
-    logger.info(f"   Webhook: {webhook_url[:50]}...")
-    logger.info(f"   轮询间隔: 每 {interval} 分钟")
-    logger.info(f"   监控范围: 最近 {days} 天的新文章")
-    logger.info(f"   内容筛选: {'已启用' if enable_filter else '已禁用'}")
-    logger.info(f"   按 Ctrl+C 停止\n")
-
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-            await client.post(webhook_url, json={
-                "msgtype": "markdown",
-                "markdown": {
-                    "content": f"🤖 **Karpathy RSS 监控已启动**\n> 每 {interval} 分钟检查一次新文章\n> 监控 92 个顶级科技博客",
-                },
-            })
-    except Exception:
-        pass
-
-    round_count = 0
-    while True:
-        round_count += 1
-        logger.info(f"── 第 {round_count} 轮检查 ──────────────────")
-        try:
-            since = datetime.now(timezone.utc) - timedelta(days=days)
-            sent_db = load_sent_db()
-            articles = await fetch_and_process(days, since, webhook_url, sent_db, enable_filter)
-            if articles:
-                logger.info(f"✅ 本轮推送了 {len(articles)} 篇新文章")
-            else:
-                logger.info("💤 本轮无新文章")
-        except Exception as e:
-            logger.error(f"❌ 本轮执行出错: {e}")
-        logger.info(f"⏳ 等待 {interval} 分钟后进行下一轮检查...\n")
-        await asyncio.sleep(interval * 60)
-
-
-def run_scheduled(days: int, fmt: str, webhook_url: str = None, enable_filter: bool = True):
-    import schedule
-    import time
-    logger.info("⏰ 定时任务已启动，每天 08:00 执行")
-    asyncio.run(run_digest(days, fmt, webhook_url=webhook_url, enable_filter=enable_filter))
-    schedule.every().day.at("08:00").do(
-        lambda: asyncio.run(run_digest(days, fmt, webhook_url=webhook_url, enable_filter=enable_filter))
-    )
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Karpathy RSS 实时精选 - 92个顶级科技博客 AI 中文解读 + 企业微信推送",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 示例:
-  python rss_reader.py                                        # 抓取今天的内容（默认只保留科技/AI/商业类）
-  python rss_reader.py --days 3                               # 抓取最近3天
-  python rss_reader.py --no-filter                            # 禁用内容筛选，收录所有文章
-  python rss_reader.py --webhook <URL>                        # 抓取并推送到企业微信群
-  python rss_reader.py --watch --webhook <URL>                # 实时监控，新文章自动推送
-  python rss_reader.py --watch --webhook <URL> --interval 15  # 每15分钟检查一次
-  python rss_reader.py --schedule --webhook <URL>             # 每天08:00自动抓取并推送
+  python rss_reader.py                          # 抓取今天的内容（默认只保留科技/AI/商业类）
+  python rss_reader.py --days 3                 # 抓取最近3天
+  python rss_reader.py --no-filter              # 禁用内容筛选，收录所有文章
+  python rss_reader.py --webhook <URL>          # 抓取并推送到企业微信群
         """,
     )
     parser.add_argument("--days", type=int, default=1, help="抓取最近N天的内容 (默认: 1)")
     parser.add_argument("--output", choices=["markdown", "html"], default="html", help="输出格式 (默认: html)")
     parser.add_argument("--webhook", type=str, default=None, help="企业微信群 Webhook URL (或设置 WECOM_WEBHOOK_URL 环境变量)")
-    parser.add_argument("--watch", action="store_true", help="实时监控模式")
-    parser.add_argument("--interval", type=int, default=DEFAULT_WATCH_INTERVAL, help=f"轮询间隔分钟数 (默认: {DEFAULT_WATCH_INTERVAL})")
-    parser.add_argument("--schedule", action="store_true", help="定时任务模式（每天08:00）")
     parser.add_argument("--no-filter", action="store_true", help="禁用内容筛选（收录所有类别文章）")
     args = parser.parse_args()
 
-    # 默认启用内容筛选，除非指定 --no-filter
     enable_filter = ENABLE_CONTENT_FILTER and not args.no_filter
-    
-    # 支持 webhook 从环境变量读取
     webhook_url = args.webhook or os.environ.get("WECOM_WEBHOOK_URL")
 
-    if args.watch and not webhook_url:
-        parser.error("--watch 模式需要配合 --webhook 使用或设置 WECOM_WEBHOOK_URL 环境变量")
-
-    if args.watch:
-        asyncio.run(run_watch(webhook_url, args.interval, args.days, enable_filter))
-    elif args.schedule:
-        run_scheduled(args.days, args.output, webhook_url, enable_filter)
-    else:
-        asyncio.run(run_digest(args.days, args.output, webhook_url=webhook_url, enable_filter=enable_filter))
+    asyncio.run(run_digest(args.days, args.output, webhook_url=webhook_url, enable_filter=enable_filter))
 
 
 if __name__ == "__main__":

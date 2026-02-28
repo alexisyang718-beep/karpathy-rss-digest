@@ -1,9 +1,9 @@
 name: RSS Digest
 
 on:
-  # 每1小时运行一次
+  # 每天北京时间 22:00（UTC 14:00）运行
   schedule:
-    - cron: '0 * * * *'
+    - cron: '0 14 * * *'
   # 手动触发
   workflow_dispatch:
 
